@@ -2,18 +2,21 @@ import random
 import math
 import numpy as np
 import time
-
+# KNNResultSet类和RadiusNNResultSet类利用相应方法获得满足条件的
+# 结点列表，但是在这两个类中不涉及 dist 的计算
 from result_set import KNNResultSet, RadiusNNResultSet
 
 
 class Octant:
     def __init__(self, children, center, extent, point_indices, is_leaf):
+        # 这里的这些属性很重要啊
         self.children = children
         self.center = center
         self.extent = extent
         self.point_indices = point_indices
         self.is_leaf = is_leaf
 
+    # 设置 print 时候显示的内容
     def __str__(self):
         output = ''
         output += 'center: [%.2f, %.2f, %.2f], ' % (self.center[0], self.center[1], self.center[2])
@@ -25,6 +28,9 @@ class Octant:
 
 
 def traverse_octree(root: Octant, depth, max_depth):
+    # 访问当前结点
+    # 如果是叶结点，则答应当前结点
+    # 如果不是，则访问该结点子结点
     depth[0] += 1
     if max_depth[0] < depth[0]:
         max_depth[0] = depth[0]
@@ -44,32 +50,51 @@ def octree_recursive_build(root, db, center, extent, point_indices, leaf_size, m
         return None
 
     if root is None:
+        # 假如该root为空，则说明该cube内不含有元素，因此为叶结点
         root = Octant([None for i in range(8)], center, extent, point_indices, is_leaf=True)
 
     # determine whether to split this octant
+    # 注意这里的终止条件
     if len(point_indices) <= leaf_size or extent <= min_extent:
+        # 不需要分割，将 is_leaf 标记为 True
         root.is_leaf = True
     else:
+        # 需要分割
         root.is_leaf = False
+
+        # 初始化8个子结点列表
         children_point_indices = [[] for i in range(8)]
+        # 遍历所有结点
         for point_idx in point_indices:
             point_db = db[point_idx]
+            # 这里使用或运算编码点云数据和center之间的关系
+            # 很巧妙，假如使用numpy应该可以用矩阵运算同时完成
+            # 所有计算
+            # 2^3 = 8
             morton_code = 0
             if point_db[0] > center[0]:
+                # 1 == 0b001
                 morton_code = morton_code | 1
             if point_db[1] > center[1]:
+                # 2 == 0b010
                 morton_code = morton_code | 2
             if point_db[2] > center[2]:
+                # 4 == 0b100
                 morton_code = morton_code | 4
+            # 整个过程很巧妙啊
             children_point_indices[morton_code].append(point_idx)
         # create children
         factor = [-0.5, 0.5]
         for i in range(8):
+            # 计算中心结点
+            # factor[*] *号部分决定子cube的中心点在root中心点的位置
             child_center_x = center[0] + factor[(i & 1) > 0] * extent
             child_center_y = center[1] + factor[(i & 2) > 0] * extent
             child_center_z = center[2] + factor[(i & 4) > 0] * extent
+            # 缩小子cube的尺寸
             child_extent = 0.5 * extent
             child_center = np.asarray([child_center_x, child_center_y, child_center_z])
+            # 最后递归得到子cube内的结点分割结果
             root.children[i] = octree_recursive_build(root.children[i],
                                                       db,
                                                       child_center,
@@ -88,6 +113,8 @@ def inside(query: np.ndarray, radius: float, octant:Octant):
     :param octant:
     :return:
     """
+    # 这种情况下搜索范围的球在cube内，所以看的是
+    # 中心点距球心距离加上球半径和cube尺寸的关系
     query_offset = query - octant.center
     query_offset_abs = np.fabs(query_offset)
     possible_space = query_offset_abs + radius
@@ -111,12 +138,17 @@ def overlaps(query: np.ndarray, radius: float, octant:Octant):
         return False
 
     # if pass the above check, consider the case that the ball is contacting the face of the octant
+    # 注意这里的前提是球心距离和cube中心距离xyz都小于半径＋cube半边长
+    # 这时候如果有两边长度小于cube半边长，则说明该球心在cube六个面中某个面
+    # 的正对面，结合上一种情况，便得出球与cube相交的结论
     if np.sum((query_offset_abs < octant.extent).astype(np.int)) >= 2:
         return True
 
     # conside the case that the ball is contacting the edge or corner of the octant
     # since the case of the ball center (query) inside octant has been considered,
     # we only consider the ball center (query) outside octant
+    # 在上一种情况考虑完球心对应cube六个面后，接下来考虑球心与cube边角之间的距离关系
+    # 这种情况就是求距离进行判断
     x_diff = max(query_offset_abs[0] - octant.extent, 0)
     y_diff = max(query_offset_abs[1] - octant.extent, 0)
     z_diff = max(query_offset_abs[2] - octant.extent, 0)
@@ -136,6 +168,8 @@ def contains(query: np.ndarray, radius: float, octant:Octant):
     query_offset_abs = np.fabs(query_offset)
 
     query_offset_to_farthest_corner = query_offset_abs + octant.extent
+    # np.linalg.norm() 求矩阵的二阶范数，这里就是向量的模
+    # 如果下面这种情况存在，则cube被球完全包含
     return np.linalg.norm(query_offset_to_farthest_corner) < radius
 
 
@@ -143,6 +177,8 @@ def octree_radius_search_fast(root: Octant, db: np.ndarray, result_set: RadiusNN
     if root is None:
         return False
 
+    # 如果球包含该cube，则返回False，该cube内所有点均为所求点，
+    # 不再遍历该root
     if contains(query, result_set.worstDist(), root):
         # compare the contents of the octant
         leaf_points = db[root.point_indices, :]
@@ -152,6 +188,7 @@ def octree_radius_search_fast(root: Octant, db: np.ndarray, result_set: RadiusNN
         # don't need to check any child
         return False
 
+    # 在root是叶结点的情况下，如果球没有让cube包含，则还需要遍历
     if root.is_leaf and len(root.point_indices) > 0:
         # compare the contents of a leaf
         leaf_points = db[root.point_indices, :]
@@ -161,10 +198,12 @@ def octree_radius_search_fast(root: Octant, db: np.ndarray, result_set: RadiusNN
         # check whether we can stop search now
         return inside(query, result_set.worstDist(), root)
 
+    #  对于不是叶结点的root，进行遍历与球相交的子结点
     # no need to go to most relevant child first, because anyway we will go through all children
     for c, child in enumerate(root.children):
         if child is None:
             continue
+        # 如果没有相交
         if False == overlaps(query, result_set.worstDist(), child):
             continue
         if octree_radius_search_fast(child, db, result_set, query):

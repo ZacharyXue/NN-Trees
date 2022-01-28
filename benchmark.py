@@ -13,7 +13,8 @@ def main():
     db_size = 64000
     dim = 3
     leaf_size = 32
-    min_extent = 0.0001
+    min_extent = 0.0001  # 设置该变量是为了防止有重合点的话
+                         # 一个cubic中元素多于预设值，导致死循环
     k = 8
     radius = 1
 
@@ -25,9 +26,11 @@ def main():
     radius_time_sum = 0
     brute_time_sum = 0
     for i in range(iteration_num):
+        # np.random.rand 产生一个0到1之间的正态分布矩阵
         db_np = (np.random.rand(db_size, dim) - 0.5) * 100
 
         begin_t = time.time()
+        # 创建八叉树
         root = octree.octree_construction(db_np, leaf_size, min_extent)
         construction_time_sum += time.time() - begin_t
 

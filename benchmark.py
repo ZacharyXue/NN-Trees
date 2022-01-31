@@ -34,13 +34,16 @@ def main():
         root = octree.octree_construction(db_np, leaf_size, min_extent)
         construction_time_sum += time.time() - begin_t
 
+        # 创建需要查询的点云，这里是随机选取的
         query = np.random.rand(3)
 
+        # KNN Search
         begin_t = time.time()
         result_set = KNNResultSet(capacity=k)
         octree.octree_knn_search(root, db_np, result_set, query)
         knn_time_sum += time.time() - begin_t
 
+        # RadiusNN Search
         begin_t = time.time()
         result_set = RadiusNNResultSet(radius=radius)
         octree.octree_radius_search_fast(root, db_np, result_set, query)

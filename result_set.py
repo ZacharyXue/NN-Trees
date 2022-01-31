@@ -12,6 +12,11 @@ class DistIndex:
 
 
 class KNNResultSet:
+    """
+        创建一个容纳KNN排列结果的类，KNN的排列结果中的每一个元素
+        使用DistIndex表示，DistIndex中存储点的index和距离查询位置
+        的距离
+    """
     def __init__(self, capacity):
         self.capacity = capacity  # 定义KNN中的K值
         self.count = 0

@@ -50,7 +50,8 @@ def octree_recursive_build(root, db, center, extent, point_indices, leaf_size, m
         return None
 
     if root is None:
-        # 假如该root为空，则说明该cube内不含有元素，因此为叶结点
+        # 假如该root为空，则创建心得八叉树结点，开始时初始化为叶结点
+        # 如果后续操作发现不是叶结点，则会修改该属性
         root = Octant([None for i in range(8)], center, extent, point_indices, is_leaf=True)
 
     # determine whether to split this octant
@@ -69,7 +70,7 @@ def octree_recursive_build(root, db, center, extent, point_indices, leaf_size, m
             point_db = db[point_idx]
             # 这里使用或运算编码点云数据和center之间的关系
             # 很巧妙，假如使用numpy应该可以用矩阵运算同时完成
-            # 所有计算
+            # 所有计算-->发现效率并没有明显提升
             # 2^3 = 8
             morton_code = 0
             if point_db[0] > center[0]:
@@ -82,6 +83,7 @@ def octree_recursive_build(root, db, center, extent, point_indices, leaf_size, m
                 # 4 == 0b100
                 morton_code = morton_code | 4
             # 整个过程很巧妙啊
+            # 这里存储过程类似于哈希表，存储的是点的index
             children_point_indices[morton_code].append(point_idx)
         # create children
         factor = [-0.5, 0.5]
@@ -177,8 +179,8 @@ def octree_radius_search_fast(root: Octant, db: np.ndarray, result_set: RadiusNN
     if root is None:
         return False
 
-    # 如果球包含该cube，则返回False，该cube内所有点均为所求点，
-    # 不再遍历该root
+    # 如果球包含该cube，则返回False（不在遍历其子cube），
+    # 该cube内所有点均为所求点
     if contains(query, result_set.worstDist(), root):
         # compare the contents of the octant
         leaf_points = db[root.point_indices, :]
@@ -188,7 +190,7 @@ def octree_radius_search_fast(root: Octant, db: np.ndarray, result_set: RadiusNN
         # don't need to check any child
         return False
 
-    # 在root是叶结点的情况下，如果球没有让cube包含，则还需要遍历
+    # 在root是叶结点的情况下，如果球没有完全包含cube，也还需要遍历
     if root.is_leaf and len(root.point_indices) > 0:
         # compare the contents of a leaf
         leaf_points = db[root.point_indices, :]
@@ -198,7 +200,7 @@ def octree_radius_search_fast(root: Octant, db: np.ndarray, result_set: RadiusNN
         # check whether we can stop search now
         return inside(query, result_set.worstDist(), root)
 
-    #  对于不是叶结点的root，进行遍历与球相交的子结点
+    # 对于不是叶结点的root，进行遍历与球相交的子结点
     # no need to go to most relevant child first, because anyway we will go through all children
     for c, child in enumerate(root.children):
         if child is None:
@@ -206,6 +208,7 @@ def octree_radius_search_fast(root: Octant, db: np.ndarray, result_set: RadiusNN
         # 如果没有相交
         if False == overlaps(query, result_set.worstDist(), child):
             continue
+        # 如果相交，则迭代该子cube
         if octree_radius_search_fast(child, db, result_set, query):
             return True
 
@@ -251,19 +254,27 @@ def octree_radius_search(root: Octant, db: np.ndarray, result_set: RadiusNNResul
 
 
 def octree_knn_search(root: Octant, db: np.ndarray, result_set: KNNResultSet, query: np.ndarray):
+    # 该函数所有的返回值都是为了方便遍历过程中是否需要停止遍历
+    # 和外界无关
     if root is None:
+        # 实际上这一条件只有外界输入时用得上，
+        # 内部迭代时会跳过为空的cube
         return False
 
     if root.is_leaf and len(root.point_indices) > 0:
+        # 如果该结点是叶结点，则在遍历完该cube内结点后则停止继续迭代
         # compare the contents of a leaf
         leaf_points = db[root.point_indices, :]
         diff = np.linalg.norm(np.expand_dims(query, 0) - leaf_points, axis=1)
         for i in range(diff.shape[0]):
+            # 遍历所有点，尝试添加到KNN队列中，add_point()函数会检测是否加入
             result_set.add_point(diff[i], root.point_indices[i])
         # check whether we can stop search now
+        # 如果该cube是叶结点，并且搜索点的KNN队列中最远距离在该cube内。
+        # 说明其他相邻cube内不可能有更近的点，则停止搜索
         return inside(query, result_set.worstDist(), root)
 
-    # go to the relevant child first
+    # 先根据查询点找到最相近的cube
     morton_code = 0
     if query[0] > root.center[0]:
         morton_code = morton_code | 1
@@ -271,28 +282,39 @@ def octree_knn_search(root: Octant, db: np.ndarray, result_set: KNNResultSet, qu
         morton_code = morton_code | 2
     if query[2] > root.center[2]:
         morton_code = morton_code | 4
-
+    # 查询当前结点和查询点最近的子cube
     if octree_knn_search(root.children[morton_code], db, result_set, query):
         return True
 
     # check other children
     for c, child in enumerate(root.children):
+        # 跳过已经遍历的结点和空结点
         if c == morton_code or child is None:
             continue
+        # 如果查询节点和当前子cube完全没有交集，则跳过该cube
         if False == overlaps(query, result_set.worstDist(), child):
             continue
+        # 在有重叠情况下迭代该子cube
         if octree_knn_search(child, db, result_set, query):
             return True
 
     # final check of if we can stop search
+    # 这里所有利用 inside() 函数进行判断是否停止遍历，其
+    # 原理都是：随着遍历KNN中存储的K个点的最大距离会不断
+    # 缩小，如果当前cube已经完全包住了以query为球心以
+    # result_set.worstDist()为半径的球，则说明没有访问其他
+    # 邻近cube的必要了
     return inside(query, result_set.worstDist(), root)
 
 
 def octree_construction(db_np, leaf_size, min_extent):
     N, dim = db_np.shape[0], db_np.shape[1]
+    # 貌似使用np.min也可以
     db_np_min = np.amin(db_np, axis=0)
     db_np_max = np.amax(db_np, axis=0)
+    # 确定该cube的半边长
     db_extent = np.max(db_np_max - db_np_min) * 0.5
+    # 确定该cube的中心点
     db_center = db_np_min + db_extent
 
     root = None
